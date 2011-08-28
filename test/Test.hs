@@ -1,24 +1,25 @@
-import NLP.MeCab
+{-# Language OverloadedStrings #-}
+
+import Text.MeCab
 
 import Control.Monad
 import Data.Maybe
+import qualified Data.Text as T
+import qualified Data.Text.IO as T
 
-import Prelude hiding (error, null)
-
+main :: IO ()
 main = do
   putStrLn =<< version
   
   m <- new ["mecab", "-l1"]
   
-  putStrLn =<< sparseToStr m "にわにはにわにわとりがいる"
-  -- putStrLn =<< nBestSparseToStr m 2 "にわにはにわにわとりがいる"
-  
-  nBestInit m "にわにはにわにわとりがいる"
-  flip mapM_ [1..5] $ \_ -> do
-    s <- nBestNextToStr m
+  T.putStrLn =<< parse m "にわにはにわにわとりがいる"
+  T.putStrLn =<< parseNBest m 2 "にわにはにわにわとりがいる"
+
+  parseNBestInit m "にわにはにわにわとりがいる"
+  replicateM_ 5 $ do
+    s <- next m
     when (isJust s) $
-      putStrLn $ fromJust s
+      T.putStrLn $ fromJust s
   
-  destroy m
-  
-  return ()
+  print =<< parseToNode m "にわにはにわにわとりがいる"
