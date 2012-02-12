@@ -1,11 +1,15 @@
 {-# LANGUAGE ForeignFunctionInterface #-}
 {-# LANGUAGE DeriveDataTypeable #-}
+{-# LANGUAGE TypeSynonymInstances #-}
+{-# LANGUAGE FlexibleInstances #-}
 
 module Text.MeCab(
   Text.MeCab.new,
   Text.MeCab.new2,
   
   version,
+  
+  MeCabString(..),
   
   parse,
   parseNBest,
@@ -37,7 +41,7 @@ import Data.Typeable
 import Foreign
 import Foreign.C
 
-import Prelude hiding (id)
+import Prelude
 
 #include <mecab.h>
 
@@ -89,35 +93,53 @@ strerror p =
 
 --
 
-parse :: MeCab -> T.Text -> IO T.Text
+class MeCabString str where
+  toBS :: str -> B.ByteString
+  fromBS :: B.ByteString -> str
+
+instance MeCabString String where
+  toBS = toBS . T.pack
+  fromBS = T.unpack . fromBS
+
+instance MeCabString B.ByteString where
+  toBS = id
+  fromBS = id
+
+instance MeCabString T.Text where
+  toBS = T.encodeUtf8
+  fromBS = T.decodeUtf8
+
+--
+
+parse :: MeCabString str => MeCab -> str -> IO str
 parse m txt = withForeignPtr (unMeCab m) $ \pm ->
-  B.useAsCStringLen (T.encodeUtf8 txt) $ \(pstr, len) -> do
+  B.useAsCStringLen (toBS txt) $ \(pstr, len) -> do
     p <- mecab_sparse_tostr2 pm pstr (fromIntegral len)
     when (p == nullPtr) $ throwIO =<< (MeCabError <$> strerror pm)
     packCString p
 
-parseNBest :: MeCab -> Int -> T.Text -> IO T.Text
+parseNBest :: MeCabString str => MeCab -> Int -> str -> IO str
 parseNBest m n txt = withForeignPtr (unMeCab m) $ \pm ->
-  B.useAsCStringLen (T.encodeUtf8 txt) $ \(pstr, len) -> do
+  B.useAsCStringLen (toBS txt) $ \(pstr, len) -> do
     p <- mecab_nbest_sparse_tostr2 pm (fromIntegral n) pstr (fromIntegral len)
     when (p == nullPtr) $ throwIO =<< (MeCabError <$> strerror pm)
     packCString p
 
-parseNBestInit :: MeCab -> T.Text -> IO ()
+parseNBestInit :: MeCabString str => MeCab -> str -> IO ()
 parseNBestInit m txt = withForeignPtr (unMeCab m) $ \pm ->
-  B.useAsCStringLen (T.encodeUtf8 txt) $ \(pstr, len) -> do
+  B.useAsCStringLen (toBS txt) $ \(pstr, len) -> do
     ret <- mecab_nbest_init2 pm pstr (fromIntegral len)
     when (ret /= 1) $ throwIO =<< (MeCabError <$> strerror pm)
 
-next :: MeCab -> IO (Maybe T.Text)
+next :: MeCabString str => MeCab -> IO (Maybe str)
 next m = withForeignPtr (unMeCab m) $ \pm -> do
   r <- mecab_nbest_next_tostr pm
   if r == nullPtr
     then return Nothing
     else Just <$> packCString r
 
-packCString :: CString -> IO T.Text
-packCString p = T.decodeUtf8 <$> B.packCString p
+packCString :: MeCabString str => CString -> IO str
+packCString p = fromBS <$> B.packCString p
 
 --
 
@@ -125,26 +147,26 @@ data Stat =
   NOR | UNK | BOS | EOS
   deriving (Eq, Read, Show)
 
-data Node =
+data Node str =
   Node
-  { surface :: T.Text
-  , feature :: T.Text
-  , rlength :: CUShort
-  , id :: CUInt
-  , rcAttr :: CUShort
-  , lcAttr :: CUShort
-  , posid :: CUShort
-  , charType :: CUChar
-  , stat :: Stat
-  , isBest :: Bool
-  , alpha :: CFloat
-  , beta :: CFloat
-  , prob :: CFloat
-  , wcost :: CShort
-  , cost :: CLong
+  { nodeSurface :: str
+  , nodeFeature :: str
+  , nodeRlength :: CUShort
+  , nodeId :: CUInt
+  , nodeRcAttr :: CUShort
+  , nodeLcAttr :: CUShort
+  , nodePosid :: CUShort
+  , nodeCharType :: CUChar
+  , nodeStat :: Stat
+  , nodeIsBest :: Bool
+  , nodeAlpha :: CFloat
+  , nodeBeta :: CFloat
+  , nodeProb :: CFloat
+  , nodeWcost :: CShort
+  , nodeCost :: CLong
   } deriving (Eq, Read, Show)
 
-peekNodes :: Ptr Node -> IO [Node]
+peekNodes :: MeCabString str => Ptr (Node str) -> IO [Node str]
 peekNodes ptr
   | ptr == nullPtr =
     return []
@@ -152,12 +174,12 @@ peekNodes ptr
       (:) <$> peekNode ptr
           <*> (peekNodes =<< (#peek mecab_node_t, next) ptr)
 
-peekNode :: Ptr Node -> IO Node
+peekNode :: MeCabString str => Ptr (Node str) -> IO (Node str)
 peekNode ptr = do
   sfc <- do
     p <- (#peek mecab_node_t, surface) ptr
     len <- (#peek mecab_node_t, length) ptr
-    T.decodeUtf8 <$> B.packCStringLen (p, fromIntegral (len :: CUShort))
+    fromBS <$> B.packCStringLen (p, fromIntegral (len :: CUShort))
   Node
     <$> return sfc
     <*> (packCString =<< (#peek mecab_node_t, feature) ptr)
@@ -182,14 +204,14 @@ peekNode ptr = do
     toStat (#const MECAB_EOS_NODE) = EOS
     toStat _ = UNK
 
-parseToNode :: MeCab -> T.Text -> IO [Node]
+parseToNode :: MeCabString str => MeCab -> str -> IO [Node str]
 parseToNode m txt = withForeignPtr (unMeCab m) $ \pm ->
-  B.useAsCStringLen (T.encodeUtf8 txt) $ \(pstr, len) -> do
+  B.useAsCStringLen (toBS txt) $ \(pstr, len) -> do
     p <- mecab_sparse_tonode2 pm pstr (fromIntegral len)
     when (p == nullPtr) $ throwIO =<< (MeCabError <$> strerror pm)
     peekNodes p
  
-nextNode :: MeCab -> IO  [Node]
+nextNode :: MeCabString str => MeCab -> IO  [Node str]
 nextNode m = withForeignPtr (unMeCab m) $ \pm -> do
   p <- mecab_nbest_next_tonode pm
   when (p == nullPtr) $ throwIO =<< (MeCabError <$> strerror pm)
@@ -259,10 +281,10 @@ foreign import ccall mecab_nbest_next_tostr
   :: Ptr MeCab -> IO CString
 
 foreign import ccall mecab_sparse_tonode2
-  :: Ptr MeCab -> CString -> CSize -> IO (Ptr Node)
+  :: Ptr MeCab -> CString -> CSize -> IO (Ptr (Node a))
 
 foreign import ccall mecab_nbest_next_tonode
-  :: Ptr MeCab -> IO (Ptr Node)
+  :: Ptr MeCab -> IO (Ptr (Node a))
 
 foreign import ccall mecab_get_partial
   :: Ptr MeCab -> IO CInt
