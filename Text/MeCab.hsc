@@ -4,23 +4,33 @@
 {-# LANGUAGE FlexibleInstances #-}
 
 module Text.MeCab(
+  -- * MeCab type
+  MeCab,
+
+  -- * Error Type
+  MeCabError(..),
+
+  -- * Node type
+  Node(..), Stat(..),
+
+  -- * String-like class
+  MeCabString(..),
+
+  -- * Initializing MeCab
   Text.MeCab.new,
   Text.MeCab.new2,
-  
-  version,
-  
-  MeCabString(..),
-  
+
+  -- * Parsing
   parse,
+  parseToNodes,
+
+  -- * N-best parsing
   parseNBest,
-  
   parseNBestInit,
-  next,
-  nextNode,
-  
-  Node(..), Stat(..),
-  parseToNode,
-  
+  nBestNext,
+  nBestNextNodes,
+
+  -- * Setting properties
   getPartial,
   setPartial,
   getTheta,
@@ -29,6 +39,9 @@ module Text.MeCab(
   setLatticeLevel,
   getAllMorphs,
   setAllMorphs,
+
+  -- * Geting MeCab version
+  version,
   ) where
 
 import Control.Applicative
@@ -53,12 +66,99 @@ mkMeCab :: Ptr MeCab -> IO MeCab
 mkMeCab p =
   MeCab <$> newForeignPtr p_mecab_destroy p
 
+data Stat =
+    -- | Normal node defined in the dictionary
+    NOR
+    -- | Unknown node not defined in the dictionary
+  | UNK
+    -- | Virtual node representing a beginning of the sentence
+  | BOS
+    -- | Virtual node representing a end of the N-best enumeration
+  | EOS
+    -- | Virtual node representing a end of the N-best enumeration
+  | EON
+  deriving (Eq, Read, Show)
+
+-- The node type
+data Node s = Node
+  { -- | Surface string
+    nodeSurface :: s
+    -- | Feature string
+  , nodeFeature :: s
+    -- | Uength of the surface form including white space before the morph
+  , nodeRlength :: Int
+    -- | Unique node id
+  , nodeId :: Int
+    -- | Right attribute id
+  , nodeRcAttr :: Int
+    -- | Left attribute id
+  , nodeLcAttr :: Int
+    -- | Unique part of speech id
+  , nodePosid :: Int
+    -- | Character type
+  , nodeCharType :: Int
+    -- | Status of this model
+  , nodeStat :: Stat
+    -- | Is this node best?
+  , nodeIsBest :: Bool
+    -- | Forward accumulative log summation
+  , nodeAlpha :: Double
+    -- | backward accumulative log summation
+  , nodeBeta :: Double
+    -- | marginal probability
+  , nodeProb :: Double
+    -- | Word cost
+  , nodeWcost :: Int
+    -- | Best accumulative cost from bos node to this node
+  , nodeCost :: Int
+  } deriving (Eq, Read, Show)
+
+peekNodes :: MeCabString s => Ptr (Node s) -> IO [Node s]
+peekNodes ptr
+  | ptr == nullPtr =
+    return []
+  | otherwise =
+      (:) <$> peekNode ptr
+          <*> (peekNodes =<< (#peek mecab_node_t, next) ptr)
+
+peekNode :: MeCabString s => Ptr (Node s) -> IO (Node s)
+peekNode ptr = do
+  sfc <- do
+    p <- (#peek mecab_node_t, surface) ptr
+    len <- (#peek mecab_node_t, length) ptr
+    fromBS <$> B.packCStringLen (p, fromIntegral (len :: CUShort))
+  Node
+    <$> return sfc
+    <*> (packCString =<< (#peek mecab_node_t, feature) ptr)
+    <*> ((fromIntegral :: CUShort -> Int) <$> (#peek mecab_node_t, rlength) ptr)
+    <*> ((fromIntegral :: CUInt   -> Int) <$> (#peek mecab_node_t, id) ptr)
+    <*> ((fromIntegral :: CUShort -> Int) <$> (#peek mecab_node_t, rcAttr) ptr)
+    <*> ((fromIntegral :: CUShort -> Int) <$> (#peek mecab_node_t, lcAttr) ptr)
+    <*> ((fromIntegral :: CUShort -> Int) <$> (#peek mecab_node_t, posid) ptr)
+    <*> ((fromIntegral :: CUChar  -> Int) <$> (#peek mecab_node_t, char_type) ptr)
+    <*> (toStat <$> (#peek mecab_node_t, stat) ptr)
+    <*> ((==(1::CUChar)) <$> (#peek mecab_node_t, isbest) ptr)
+    <*> ((realToFrac :: CFloat -> Double) <$> (#peek mecab_node_t, alpha) ptr)
+    <*> ((realToFrac :: CFloat -> Double) <$> (#peek mecab_node_t, beta) ptr)
+    <*> ((realToFrac :: CFloat -> Double) <$> (#peek mecab_node_t, prob) ptr)
+    <*> ((fromIntegral :: CShort  -> Int) <$> (#peek mecab_node_t, wcost) ptr)
+    <*> ((fromIntegral :: CLong   -> Int) <$> (#peek mecab_node_t, cost) ptr)
+  where
+    toStat :: CUChar -> Stat
+    toStat (#const MECAB_NOR_NODE) = NOR
+    toStat (#const MECAB_UNK_NODE) = UNK
+    toStat (#const MECAB_BOS_NODE) = BOS
+    toStat (#const MECAB_EOS_NODE) = EOS
+    toStat (#const MECAB_EON_NODE) = EON
+    toStat _ = UNK
+
 data MeCabError =
   MeCabError String
   deriving (Eq, Ord, Show, Typeable)
 
 instance Exception MeCabError
 
+-- | Initializing MeCab by passing command-line args
 new :: [String] -> IO MeCab
 new args =
   withCStrings args $ \argc argv -> do
@@ -67,6 +167,7 @@ new args =
       throwIO =<< (MeCabError <$> strerror nullPtr)
     mkMeCab p
 
+-- | Initializing MeCab by passing concatenated command-line args
 new2 :: String -> IO MeCab
 new2 arg =
   withCString arg $ \pstr ->
@@ -83,6 +184,7 @@ withCStrings' strs f = go [] strs where
   go ps (s:ss) =
     withCString s $ \p -> go (p:ps) ss
 
+-- | Get MeCab version
 version :: IO String
 version =
   peekCString =<< mecab_version
@@ -91,11 +193,11 @@ strerror :: Ptr MeCab -> IO String
 strerror p =
   peekCString =<< mecab_strerror p
 
---
+-- String Types
 
-class MeCabString str where
-  toBS :: str -> B.ByteString
-  fromBS :: B.ByteString -> str
+class MeCabString s where
+  toBS :: s -> B.ByteString
+  fromBS :: B.ByteString -> s
 
 instance MeCabString String where
   toBS = toBS . T.pack
@@ -109,113 +211,59 @@ instance MeCabString T.Text where
   toBS = T.encodeUtf8
   fromBS = T.decodeUtf8
 
---
+-- Parsing
 
-parse :: MeCabString str => MeCab -> str -> IO str
+-- | Parse given string and obtain results as a string format
+parse :: MeCabString s => MeCab -> s -> IO s
 parse m txt = withForeignPtr (unMeCab m) $ \pm ->
   B.useAsCStringLen (toBS txt) $ \(pstr, len) -> do
     p <- mecab_sparse_tostr2 pm pstr (fromIntegral len)
     when (p == nullPtr) $ throwIO =<< (MeCabError <$> strerror pm)
     packCString p
 
-parseNBest :: MeCabString str => MeCab -> Int -> str -> IO str
+-- | Parse given string and obtain results as a nodes
+parseToNodes :: MeCabString s => MeCab -> s -> IO [Node s]
+parseToNodes m txt = withForeignPtr (unMeCab m) $ \pm ->
+  B.useAsCStringLen (toBS txt) $ \(pstr, len) -> do
+    p <- mecab_sparse_tonode2 pm pstr (fromIntegral len)
+    when (p == nullPtr) $ throwIO =<< (MeCabError <$> strerror pm)
+    peekNodes p
+
+-- N-best parsing
+
+-- | Parse given string and obtain whole N-best results as a string format
+parseNBest :: MeCabString s => MeCab -> Int -> s -> IO s
 parseNBest m n txt = withForeignPtr (unMeCab m) $ \pm ->
   B.useAsCStringLen (toBS txt) $ \(pstr, len) -> do
     p <- mecab_nbest_sparse_tostr2 pm (fromIntegral n) pstr (fromIntegral len)
     when (p == nullPtr) $ throwIO =<< (MeCabError <$> strerror pm)
     packCString p
 
-parseNBestInit :: MeCabString str => MeCab -> str -> IO ()
+-- | Parse given string and prepare obtaining N-best results
+parseNBestInit :: MeCabString s => MeCab -> s -> IO ()
 parseNBestInit m txt = withForeignPtr (unMeCab m) $ \pm ->
   B.useAsCStringLen (toBS txt) $ \(pstr, len) -> do
     ret <- mecab_nbest_init2 pm pstr (fromIntegral len)
     when (ret /= 1) $ throwIO =<< (MeCabError <$> strerror pm)
 
-next :: MeCabString str => MeCab -> IO (Maybe str)
-next m = withForeignPtr (unMeCab m) $ \pm -> do
+-- | Obtain next result as a string format
+nBestNext :: MeCabString s => MeCab -> IO (Maybe s)
+nBestNext m = withForeignPtr (unMeCab m) $ \pm -> do
   r <- mecab_nbest_next_tostr pm
   if r == nullPtr
     then return Nothing
     else Just <$> packCString r
 
-packCString :: MeCabString str => CString -> IO str
-packCString p = fromBS <$> B.packCString p
-
---
-
-data Stat =
-  NOR | UNK | BOS | EOS
-  deriving (Eq, Read, Show)
-
-data Node str =
-  Node
-  { nodeSurface :: str
-  , nodeFeature :: str
-  , nodeRlength :: CUShort
-  , nodeId :: CUInt
-  , nodeRcAttr :: CUShort
-  , nodeLcAttr :: CUShort
-  , nodePosid :: CUShort
-  , nodeCharType :: CUChar
-  , nodeStat :: Stat
-  , nodeIsBest :: Bool
-  , nodeAlpha :: CFloat
-  , nodeBeta :: CFloat
-  , nodeProb :: CFloat
-  , nodeWcost :: CShort
-  , nodeCost :: CLong
-  } deriving (Eq, Read, Show)
-
-peekNodes :: MeCabString str => Ptr (Node str) -> IO [Node str]
-peekNodes ptr
-  | ptr == nullPtr =
-    return []
-  | otherwise =
-      (:) <$> peekNode ptr
-          <*> (peekNodes =<< (#peek mecab_node_t, next) ptr)
-
-peekNode :: MeCabString str => Ptr (Node str) -> IO (Node str)
-peekNode ptr = do
-  sfc <- do
-    p <- (#peek mecab_node_t, surface) ptr
-    len <- (#peek mecab_node_t, length) ptr
-    fromBS <$> B.packCStringLen (p, fromIntegral (len :: CUShort))
-  Node
-    <$> return sfc
-    <*> (packCString =<< (#peek mecab_node_t, feature) ptr)
-    <*> (#peek mecab_node_t, rlength) ptr
-    <*> (#peek mecab_node_t, id) ptr
-    <*> (#peek mecab_node_t, rcAttr) ptr
-    <*> (#peek mecab_node_t, lcAttr) ptr
-    <*> (#peek mecab_node_t, posid) ptr
-    <*> (#peek mecab_node_t, char_type) ptr
-    <*> (toStat <$> (#peek mecab_node_t, stat) ptr)
-    <*> ((==(1::CUChar)) <$> (#peek mecab_node_t, isbest) ptr)
-    <*> (#peek mecab_node_t, alpha) ptr
-    <*> (#peek mecab_node_t, beta) ptr
-    <*> (#peek mecab_node_t, prob) ptr
-    <*> (#peek mecab_node_t, wcost) ptr
-    <*> (#peek mecab_node_t, cost) ptr
-  where
-    toStat :: CUChar -> Stat
-    toStat (#const MECAB_NOR_NODE) = NOR
-    toStat (#const MECAB_UNK_NODE) = UNK
-    toStat (#const MECAB_BOS_NODE) = BOS
-    toStat (#const MECAB_EOS_NODE) = EOS
-    toStat _ = UNK
-
-parseToNode :: MeCabString str => MeCab -> str -> IO [Node str]
-parseToNode m txt = withForeignPtr (unMeCab m) $ \pm ->
-  B.useAsCStringLen (toBS txt) $ \(pstr, len) -> do
-    p <- mecab_sparse_tonode2 pm pstr (fromIntegral len)
-    when (p == nullPtr) $ throwIO =<< (MeCabError <$> strerror pm)
-    peekNodes p
- 
-nextNode :: MeCabString str => MeCab -> IO  [Node str]
-nextNode m = withForeignPtr (unMeCab m) $ \pm -> do
+-- | Obtain next result as a nodes
+nBestNextNodes :: MeCabString s => MeCab -> IO (Maybe [Node s])
+nBestNextNodes m = withForeignPtr (unMeCab m) $ \pm -> do
   p <- mecab_nbest_next_tonode pm
-  when (p == nullPtr) $ throwIO =<< (MeCabError <$> strerror pm)
-  peekNodes p
+  if p == nullPtr
+    then return Nothing
+    else Just <$> peekNodes p
+
+packCString :: MeCabString s => CString -> IO s
+packCString p = fromBS <$> B.packCString p
 
 --
 
