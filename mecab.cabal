@@ -14,8 +14,8 @@ Build-Type:          Simple
 
 library
   build-depends:        base >= 4 && < 5
-                      , bytestring >= 0.9 && < 0.11
-                      , text >= 0.11 && < 0.12
+                      , bytestring >= 0.9
+                      , text >= 0.11
 
   ghc-options:          -Wall -O2
   extra-libraries:      mecab
