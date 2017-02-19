@@ -2,7 +2,6 @@
 {-# LANGUAGE DeriveDataTypeable #-}
 {-# LANGUAGE TypeSynonymInstances #-}
 {-# LANGUAGE FlexibleInstances #-}
-
 module Text.MeCab(
   -- * MeCab type
   MeCab,
@@ -47,12 +46,12 @@ module Text.MeCab(
 import Control.Applicative
 import Control.Exception
 import Control.Monad
-import qualified Data.ByteString as B
-import qualified Data.Text as T
-import qualified Data.Text.Encoding as T
 import Data.Typeable
 import Foreign
 import Foreign.C
+import qualified Data.ByteString as B
+import qualified Data.Text as T
+import qualified Data.Text.Encoding as T
 
 import Prelude
 
